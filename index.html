@@ -1,0 +1,1040 @@
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from "recharts";
+
+/* =========================================================================
+   Daily Growth Log
+   -------------------------------------------------------------------------
+   Persönliches Self-Tracking-/Tagebuch-System (mobile-first, dark, ruhig).
+
+   ARCHITEKTUR-HINWEIS (für den späteren Supabase-Umbau):
+   - Der GESAMTE Datenzugriff läuft über das `storage`-Objekt weiter unten.
+   - Es ist vollständig async (Promises), genau wie Supabase.
+   - Zum Umstieg auf Supabase reimplementierst du NUR die Methoden in `storage`
+     (loadEntries / saveEntry / deleteEntry / getPin / setPin / loadWordStats /
+      saveWordStats). Die restliche App bleibt unverändert.
+   - Datenmodell siehe createEmptyEntry(): 1:1 als Supabase-Tabelle `daily_entries`
+     nutzbar (date = Primary Key pro user_id).
+   ========================================================================= */
+
+/* ----------------------------- THEME / CSS ----------------------------- */
+const CSS = `
+:root{
+  --bg:#11151a; --bg2:#161b21; --card:#1b212a; --card2:#222a35;
+  --line:#2a323d; --text:#e7eaee; --muted:#8b939d; --faint:#5c646f;
+  --accent:#d8a24a; --accent-soft:rgba(216,162,74,.14);
+  --good:#6fbf9b; --good-soft:rgba(111,191,155,.14);
+  --bad:#d98373; --bad-soft:rgba(217,131,115,.14);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+.dgl{
+  background:var(--bg); color:var(--text); min-height:100vh;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px; line-height:1.5; padding-bottom:84px; max-width:560px; margin:0 auto;
+  position:relative;
+}
+.dgl input,.dgl textarea,.dgl button{font-family:inherit;font-size:inherit;color:inherit}
+.dgl h1,.dgl h2,.dgl h3{margin:0;font-weight:600}
+.wrap{padding:16px 16px 8px}
+.muted{color:var(--muted)}
+.faint{color:var(--faint)}
+
+/* top */
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 4px}
+.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.date-big{font-size:26px;font-weight:600;letter-spacing:-.01em;margin-top:2px}
+
+/* cards */
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0}
+.card.tight{padding:12px}
+
+/* buttons */
+.btn{border:1px solid var(--line);background:var(--card2);color:var(--text);
+  border-radius:12px;padding:12px 14px;font-weight:500;cursor:pointer;transition:.12s;width:100%}
+.btn:active{transform:scale(.985)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a140a;font-weight:600}
+.btn.ghost{background:transparent}
+.btn.sm{padding:9px 12px;font-size:13px;border-radius:10px;width:auto}
+.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn-row.three{grid-template-columns:1fr 1fr 1fr}
+
+/* scale 1-10 */
+.scale{display:grid;grid-template-columns:repeat(10,1fr);gap:6px}
+.scale button{border:1px solid var(--line);background:var(--bg2);color:var(--muted);
+  border-radius:9px;padding:9px 0;font-size:13px;cursor:pointer;transition:.1s}
+.scale button.on{background:var(--accent);border-color:var(--accent);color:#1a140a;font-weight:600}
+.scale.good button.on{background:var(--good);border-color:var(--good);color:#0c1a14}
+.scale.bad button.on{background:var(--bad);border-color:var(--bad);color:#1a0d0a}
+
+/* yes/no/tri */
+.seg{display:flex;gap:8px}
+.seg button{flex:1;border:1px solid var(--line);background:var(--bg2);color:var(--muted);
+  border-radius:11px;padding:11px 0;cursor:pointer;font-weight:500;transition:.1s}
+.seg button.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
+.seg button.on.yes{background:var(--good-soft);border-color:var(--good)}
+.seg button.on.no{background:var(--bad-soft);border-color:var(--bad)}
+
+/* chips */
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);background:var(--bg2);color:var(--muted);
+  border-radius:999px;padding:7px 13px;font-size:13px;cursor:pointer;transition:.1s}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
+
+/* fields */
+.field{margin:14px 0}
+.label{font-size:13px;color:var(--muted);margin-bottom:7px;display:block}
+.ta,.inp{width:100%;background:var(--bg2);border:1px solid var(--line);border-radius:12px;
+  padding:11px 12px;color:var(--text);resize:vertical;outline:none}
+.ta:focus,.inp:focus{border-color:var(--accent)}
+.ta{min-height:44px}
+
+/* accordion */
+.acc{border:1px solid var(--line);background:var(--card);border-radius:14px;margin:10px 0;overflow:hidden}
+.acc-head{display:flex;align-items:center;gap:11px;padding:14px;cursor:pointer;user-select:none}
+.acc-head h3{flex:1;font-size:15px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--line);flex:none}
+.dot.filled{background:var(--good)}
+.chev{color:var(--muted);transition:.15s;font-size:13px}
+.chev.open{transform:rotate(90deg)}
+.acc-body{padding:0 14px 14px}
+
+/* progress ring */
+.ring-wrap{display:flex;align-items:center;gap:16px}
+.ring-num{font-size:22px;font-weight:600;line-height:1}
+.ring-sub{font-size:12px;color:var(--muted);margin-top:3px}
+
+/* nav */
+.nav{position:fixed;bottom:0;left:0;right:0;background:rgba(17,21,26,.94);
+  backdrop-filter:blur(12px);border-top:1px solid var(--line);display:flex;
+  max-width:560px;margin:0 auto;z-index:30}
+.nav button{flex:1;background:none;border:none;padding:10px 0 14px;color:var(--faint);
+  cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px}
+.nav button.on{color:var(--accent)}
+.nav .ic{font-size:18px;line-height:1}
+
+/* toast */
+.toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);
+  background:var(--good);color:#0c1a14;padding:10px 18px;border-radius:999px;
+  font-weight:600;font-size:13px;z-index:50;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+
+/* misc */
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.divider{height:1px;background:var(--line);margin:14px 0}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 10px;
+  border-radius:999px;background:var(--bg2);border:1px solid var(--line);color:var(--muted)}
+.list-day{display:flex;flex-direction:column;gap:4px;padding:13px 14px;border:1px solid var(--line);
+  background:var(--card);border-radius:13px;margin:9px 0;cursor:pointer}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:13px}
+.stat .n{font-size:22px;font-weight:600}
+.stat .l{font-size:12px;color:var(--muted);margin-top:2px}
+.warn{background:var(--bad-soft);border:1px solid var(--bad);border-radius:12px;
+  padding:11px 13px;font-size:13px;color:var(--text)}
+.center{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:100vh;gap:18px;padding:24px}
+.pin-dots{display:flex;gap:12px}
+.pin-dots span{width:14px;height:14px;border-radius:50%;border:1px solid var(--muted)}
+.pin-dots span.f{background:var(--accent);border-color:var(--accent)}
+.keypad{display:grid;grid-template-columns:repeat(3,72px);gap:14px}
+.keypad button{height:72px;border-radius:50%;border:1px solid var(--line);background:var(--card);
+  font-size:24px;color:var(--text);cursor:pointer}
+.keypad button:active{background:var(--card2)}
+`;
+
+/* --------------------------- WORD OF THE DAY --------------------------- */
+const WORDS = [
+  { w:"Virtuosität", def:"meisterhafte, herausragende Beherrschung einer Fertigkeit", ex:"Er löste das Problem mit erstaunlicher Virtuosität.", syn:"Meisterschaft, Brillanz", lvl:3 },
+  { w:"Ambivalenz", def:"das gleichzeitige Bestehen widersprüchlicher Gefühle oder Bewertungen", ex:"Ihre Ambivalenz gegenüber dem Angebot war spürbar.", syn:"Zwiespältigkeit, Doppelwertigkeit", lvl:3 },
+  { w:"Kohärenz", def:"innerer Zusammenhang, logische Stimmigkeit", ex:"Dem Argument fehlte die nötige Kohärenz.", syn:"Zusammenhang, Stimmigkeit", lvl:2 },
+  { w:"Kontingenz", def:"Zufälligkeit; das Mögliche, das auch anders sein könnte", ex:"Geschichte ist von Kontingenz geprägt.", syn:"Zufälligkeit, Möglichkeit", lvl:4 },
+  { w:"Resilienz", def:"psychische Widerstandskraft gegenüber Belastungen", ex:"Resilienz lässt sich trainieren.", syn:"Widerstandsfähigkeit, Robustheit", lvl:2 },
+  { w:"Integrität", def:"Unbestechlichkeit; Übereinstimmung von Werten und Handeln", ex:"Seine Integrität war über jeden Zweifel erhaben.", syn:"Aufrichtigkeit, Geradlinigkeit", lvl:2 },
+  { w:"Implikation", def:"das, was logisch mitgemeint oder vorausgesetzt ist", ex:"Die Implikationen der Entscheidung waren weitreichend.", syn:"Folgerung, Konsequenz", lvl:3 },
+  { w:"Differenzierung", def:"das genaue Unterscheiden nach feinen Merkmalen", ex:"Diese Frage verlangt mehr Differenzierung.", syn:"Unterscheidung, Abstufung", lvl:3 },
+  { w:"Prämisse", def:"Voraussetzung, von der eine Schlussfolgerung ausgeht", ex:"Die Prämisse selbst war fragwürdig.", syn:"Annahme, Voraussetzung", lvl:3 },
+  { w:"Antizipation", def:"das gedankliche Vorwegnehmen eines Ereignisses", ex:"In Antizipation des Regens nahm er den Schirm mit.", syn:"Vorwegnahme, Erwartung", lvl:3 },
+  { w:"Eskalation", def:"stufenweise Verschärfung einer Lage", ex:"Eine weitere Eskalation galt es zu vermeiden.", syn:"Zuspitzung, Steigerung", lvl:2 },
+  { w:"Diskrepanz", def:"auffälliger Widerspruch zwischen zwei Dingen", ex:"Die Diskrepanz zwischen Wort und Tat war groß.", syn:"Widerspruch, Missverhältnis", lvl:3 },
+  { w:"Reflexion", def:"prüfendes Nachdenken über sich oder eine Sache", ex:"Ruhige Reflexion brachte Klarheit.", syn:"Nachdenken, Selbstbetrachtung", lvl:2 },
+  { w:"Autonomie", def:"Selbstbestimmung, Unabhängigkeit im Handeln", ex:"Er schätzte seine Autonomie über alles.", syn:"Selbstbestimmung, Eigenständigkeit", lvl:2 },
+  { w:"Disziplin", def:"konsequente Selbststeuerung über die Zeit", ex:"Disziplin schlägt Motivation auf lange Sicht.", syn:"Selbstkontrolle, Konsequenz", lvl:1 },
+  { w:"Konvergenz", def:"das Zusammenlaufen, Annähern verschiedener Linien", ex:"Die Konvergenz beider Methoden überraschte.", syn:"Annäherung, Zusammenlaufen", lvl:4 },
+  { w:"Divergenz", def:"das Auseinanderstreben, Sich-Entfernen", ex:"Mit der Zeit wuchs die Divergenz der Ansichten.", syn:"Abweichung, Auseinanderstreben", lvl:4 },
+  { w:"intrinsisch", def:"von innen kommend, aus sich selbst heraus", ex:"Intrinsische Motivation hält länger.", syn:"innewohnend, von innen", lvl:3 },
+  { w:"extrinsisch", def:"von außen kommend (z. B. Belohnung, Druck)", ex:"Extrinsische Anreize wirken oft nur kurz.", syn:"von außen, äußerlich", lvl:3 },
+  { w:"stoisch", def:"gelassen, unerschütterlich gegenüber Widrigkeiten", ex:"Stoisch nahm er die Kritik hin.", syn:"gelassen, gleichmütig", lvl:3 },
+  { w:"opportunistisch", def:"den eigenen Vorteil je nach Lage flexibel suchend", ex:"Sein Verhalten war rein opportunistisch.", syn:"vorteilssuchend, anpasserisch", lvl:3 },
+  { w:"dezidiert", def:"entschieden, klar und bestimmt", ex:"Sie vertrat eine dezidierte Meinung.", syn:"entschieden, bestimmt", lvl:4 },
+  { w:"stringent", def:"streng folgerichtig, ohne Bruch im Aufbau", ex:"Der Beweis war stringent geführt.", syn:"schlüssig, folgerichtig", lvl:4 },
+  { w:"substanziell", def:"wesentlich, von echtem Gehalt", ex:"Das war ein substanzieller Fortschritt.", syn:"wesentlich, gehaltvoll", lvl:3 },
+  { w:"evident", def:"offensichtlich, unmittelbar einleuchtend", ex:"Der Fehler war evident.", syn:"offensichtlich, einleuchtend", lvl:3 },
+];
+
+/* ----------------------------- DATA MODEL ----------------------------- */
+const GROWTH_CATS = ["Mentalität","Körper / Fitness","Gesundheit","Beziehungen","Disziplin","Schule / Lernen","Business / Geld","Mut / soziale Sicherheit","Kreativität","Selbstkontrolle","Kommunikation","Verantwortung","Sonstiges"];
+const LEARN_CATS = ["Schule","Menschen","Psychologie","Business","Technik","Sprache","Körper/Gesundheit","Lebenserfahrung","Sonstiges"];
+
+function todayKey(d = new Date()) {
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,"0"), day = String(d.getDate()).padStart(2,"0");
+  return `${y}-${m}-${day}`;
+}
+function createEmptyEntry(date) {
+  return {
+    id: date, date, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    // A Mini-Tagebuch
+    diary_text:"", diary_special:"", diary_busy:"", diary_notes:"",
+    // B Stimmung
+    mood_morning:null, mood_midday:null, mood_evening:null,
+    mood_shifted:null, mood_shift_area:"", mood_shift_reason:"",
+    energy:null, stress:null, motivation:null,
+    // C Traum
+    dream_had:null, dream_text:"", dream_emotion:"", dream_people:"", dream_places:"",
+    dream_symbols:"", dream_intensity:null, dream_valence:"",
+    // D Wachstum
+    growth_happened:null, growth_categories:[], growth_text:"", growth_why:"", growth_continue:"",
+    // E Lernen
+    learned_today:null, learned_text:"", learned_category:"", learned_insight:"", learned_importance:null,
+    // F Wort des Tages -> separate wordStats
+    // G Soziale Angst / Mut
+    social_fear_happened:null, social_fear_text:"", social_fear_level:null,
+    social_fear_did:"", social_fear_result:"", social_fear_justified:"", social_fear_learned:"",
+    talked_to_strangers:null, stranger_count:null, had_opportunity_to_talk:null,
+    no_talk_reason:"", social_challenge_tomorrow:"",
+    // H Entscheidungen
+    decision_good:null, decision_text:"", decision_difficulty:null, decision_why:"",
+    decision_horizon:"", decision_bad:"", decision_learned:"",
+    // I Besondere Gefühle
+    special_feeling_happened:null, special_feeling_text:"", special_feeling_person_or_trigger:"",
+    special_feeling_intensity:null, special_feeling_valence:"", special_feeling_meaning:"",
+    // J Körper
+    sleep_hours:"", sleep_quality:null, sport_done:null, sport_text:"",
+    nutrition:null, pain:"", energy_body:null,
+    // K Abschluss
+    gratitude:"", best_moment:"", hardest_moment:"", tomorrow_focus:"", proud_of:"",
+  };
+}
+
+// Felder, die den "Ausfüll-Fortschritt" bestimmen (repräsentativ, nicht alle).
+const PROGRESS_FIELDS = [
+  "diary_text","mood_evening","energy","growth_happened","learned_today",
+  "social_fear_happened","decision_good","special_feeling_happened","gratitude","tomorrow_focus",
+];
+function progressOf(e) {
+  if (!e) return 0;
+  let filled = 0;
+  for (const f of PROGRESS_FIELDS) {
+    const v = e[f];
+    if (v !== null && v !== "" && v !== undefined) filled++;
+  }
+  return Math.round((filled / PROGRESS_FIELDS.length) * 100);
+}
+
+/* --------------------------- STORAGE ADAPTER --------------------------- */
+/* Einzige Stelle mit Datenzugriff. Für Supabase: nur diese Methoden ersetzen. */
+const memFallback = new Map();
+const hasStore = typeof window !== "undefined" && window.storage && typeof window.storage.get === "function";
+
+async function rawGet(key) {
+  if (hasStore) { try { const r = await window.storage.get(key); return r ? r.value : null; } catch { return null; } }
+  return memFallback.has(key) ? memFallback.get(key) : null;
+}
+async function rawSet(key, value) {
+  if (hasStore) { try { await window.storage.set(key, value); return; } catch {} }
+  memFallback.set(key, value);
+}
+
+const ENTRIES_KEY = "dgl:entries";   // { "YYYY-MM-DD": entry } – ein Key, wenige Calls, async wie Supabase
+const PIN_KEY = "dgl:pin";
+const WORDS_KEY = "dgl:wordstats";
+
+const storage = {
+  async loadEntries() {
+    const raw = await rawGet(ENTRIES_KEY);
+    try { return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+  },
+  async saveEntry(entry) {
+    const all = await this.loadEntries();
+    entry.updated_at = new Date().toISOString();
+    all[entry.date] = entry;
+    await rawSet(ENTRIES_KEY, JSON.stringify(all));
+    return all;
+  },
+  async deleteEntry(date) {
+    const all = await this.loadEntries();
+    delete all[date];
+    await rawSet(ENTRIES_KEY, JSON.stringify(all));
+    return all;
+  },
+  async getPin()        { return await rawGet(PIN_KEY); },
+  async setPin(pin)     { await rawSet(PIN_KEY, pin || ""); },
+  async loadWordStats() { const r = await rawGet(WORDS_KEY); try { return r ? JSON.parse(r) : {}; } catch { return {}; } },
+  async saveWordStats(s){ await rawSet(WORDS_KEY, JSON.stringify(s)); },
+};
+
+/* ----------------------------- UI PRIMITIVES ----------------------------- */
+function Scale({ value, onChange, tone }) {
+  return (
+    <div className={`scale ${tone||""}`}>
+      {Array.from({length:10},(_,i)=>i+1).map(n=>(
+        <button key={n} className={value===n?"on":""} onClick={()=>onChange(value===n?null:n)}>{n}</button>
+      ))}
+    </div>
+  );
+}
+function Seg({ value, onChange, options }) {
+  // options: [{v,label,tone?}]
+  return (
+    <div className="seg">
+      {options.map(o=>(
+        <button key={String(o.v)} className={`${value===o.v?"on":""} ${o.tone||""}`}
+          onClick={()=>onChange(value===o.v?null:o.v)}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
+const YN = (props)=> <Seg {...props} options={[{v:true,label:"Ja",tone:"yes"},{v:false,label:"Nein",tone:"no"}]} />;
+const YNU = (props)=> <Seg {...props} options={[{v:"ja",label:"Ja",tone:"yes"},{v:"teilweise",label:"Teilweise"},{v:"nein",label:"Nein",tone:"no"}]} />;
+
+function Chips({ value, onChange, options }) {
+  const sel = value || [];
+  const toggle = (o)=> onChange(sel.includes(o) ? sel.filter(x=>x!==o) : [...sel,o]);
+  return (
+    <div className="chips">
+      {options.map(o=>(
+        <button key={o} className={`chip ${sel.includes(o)?"on":""}`} onClick={()=>toggle(o)}>{o}</button>
+      ))}
+    </div>
+  );
+}
+function Field({ label, children }) {
+  return <div className="field"><label className="label">{label}</label>{children}</div>;
+}
+function TA({ value, onChange, placeholder, rows }) {
+  return <textarea className="ta" rows={rows||2} value={value||""} placeholder={placeholder||""}
+    onChange={e=>onChange(e.target.value)} />;
+}
+function Inp({ value, onChange, placeholder, type }) {
+  return <input className="inp" type={type||"text"} value={value??""} placeholder={placeholder||""}
+    inputMode={type==="number"?"decimal":undefined}
+    onChange={e=>onChange(type==="number" ? (e.target.value===""?"":Number(e.target.value)) : e.target.value)} />;
+}
+function Accordion({ title, filled, children, defaultOpen }) {
+  const [open,setOpen] = useState(!!defaultOpen);
+  return (
+    <div className="acc">
+      <div className="acc-head" onClick={()=>setOpen(o=>!o)}>
+        <span className={`dot ${filled?"filled":""}`}></span>
+        <h3>{title}</h3>
+        <span className={`chev ${open?"open":""}`}>▶</span>
+      </div>
+      {open && <div className="acc-body">{children}</div>}
+    </div>
+  );
+}
+function Ring({ pct, label, sub }) {
+  const r=26, c=2*Math.PI*r, off=c-(pct/100)*c;
+  return (
+    <div className="ring-wrap">
+      <svg width="64" height="64" viewBox="0 0 64 64" style={{transform:"rotate(-90deg)"}}>
+        <circle cx="32" cy="32" r={r} fill="none" stroke="var(--line)" strokeWidth="6"/>
+        <circle cx="32" cy="32" r={r} fill="none" stroke="var(--accent)" strokeWidth="6"
+          strokeDasharray={c} strokeDashoffset={off} strokeLinecap="round" style={{transition:"stroke-dashoffset .4s"}}/>
+      </svg>
+      <div><div className="ring-num">{label}</div><div className="ring-sub">{sub}</div></div>
+    </div>
+  );
+}
+
+/* ============================== MAIN APP ============================== */
+export default function App() {
+  const [booted, setBooted] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [pinExists, setPinExists] = useState(false);
+  const [entries, setEntries] = useState({});       // { date: entry }
+  const [view, setView] = useState("today");        // today | quick | full | calendar | stats | export | word
+  const [activeDate, setActiveDate] = useState(todayKey());
+  const [toast, setToast] = useState("");
+  const toastTimer = useRef(null);
+
+  const showToast = useCallback((msg)=>{
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(()=>setToast(""), 1600);
+  },[]);
+
+  // boot
+  useEffect(()=>{ (async()=>{
+    const pin = await storage.getPin();
+    const all = await storage.loadEntries();
+    setEntries(all);
+    if (pin) { setPinExists(true); setLocked(true); }
+    setBooted(true);
+  })(); },[]);
+
+  const entry = entries[activeDate] || null;
+
+  const upsert = useCallback((patch)=>{
+    setEntries(prev=>{
+      const base = prev[activeDate] || createEmptyEntry(activeDate);
+      const next = { ...base, ...patch };
+      const all = { ...prev, [activeDate]: next };
+      storage.saveEntry(next); // async, fire-and-forget; storage ist autoritativ über loadEntries
+      return all;
+    });
+  },[activeDate]);
+
+  const set = (field)=> (val)=> upsert({ [field]: val });
+
+  if (!booted) return <div className="dgl"><style>{CSS}</style><div className="center"><span className="muted">Lädt…</span></div></div>;
+
+  if (locked) return (
+    <div className="dgl"><style>{CSS}</style>
+      <PinLock mode="unlock" onDone={()=>setLocked(false)} />
+    </div>
+  );
+
+  return (
+    <div className="dgl">
+      <style>{CSS}</style>
+
+      {view==="today" && (
+        <TodayView entry={entry} activeDate={activeDate} setActiveDate={setActiveDate}
+          go={setView} entries={entries} />
+      )}
+      {view==="quick"  && <QuickCheckin entry={entry} set={set} activeDate={activeDate}
+          onSave={()=>{ showToast("Gespeichert"); setView("today"); }} />}
+      {view==="full"   && <FullCheckin entry={entry} set={set} upsert={upsert} activeDate={activeDate}
+          onSave={()=>{ showToast("Gespeichert"); setView("today"); }} />}
+      {view==="calendar" && <CalendarView entries={entries} open={(d)=>{ setActiveDate(d); setView("full"); }}
+          del={async(d)=>{ const all=await storage.deleteEntry(d); setEntries(all); showToast("Tag gelöscht"); }} />}
+      {view==="stats"  && <StatsView entries={entries} />}
+      {view==="export" && <ExportView entries={entries} showToast={showToast} />}
+      {view==="word"   && <WordView showToast={showToast} />}
+
+      {toast && <div className="toast">{toast}</div>}
+
+      <nav className="nav">
+        {[
+          ["today","☰","Heute"],
+          ["calendar","▤","Kalender"],
+          ["word","✎","Wörter"],
+          ["stats","◔","Statistik"],
+          ["export","⇪","Export"],
+        ].map(([k,ic,lbl])=>(
+          <button key={k} className={view===k?"on":""} onClick={()=>setView(k)}>
+            <span className="ic">{ic}</span>{lbl}
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+/* ------------------------------- TODAY ------------------------------- */
+function fmtDate(key){
+  const [y,m,d] = key.split("-").map(Number);
+  const dt = new Date(y,m-1,d);
+  return dt.toLocaleDateString("de-DE",{weekday:"long",day:"numeric",month:"long"});
+}
+function shiftDate(key, days){
+  const [y,m,d]=key.split("-").map(Number);
+  const dt=new Date(y,m-1,d); dt.setDate(dt.getDate()+days);
+  return todayKey(dt);
+}
+function TodayView({ entry, activeDate, setActiveDate, go, entries }) {
+  const pct = progressOf(entry);
+  const isToday = activeDate === todayKey();
+  return (
+    <>
+      <div className="topbar">
+        <div>
+          <div className="eyebrow">Daily Growth Log</div>
+          <div className="date-big" style={{textTransform:"capitalize"}}>{isToday?"Heute":fmtDate(activeDate)}</div>
+          <div className="muted" style={{fontSize:13,marginTop:2,textTransform:"capitalize"}}>{fmtDate(activeDate)}</div>
+        </div>
+      </div>
+
+      <div className="wrap">
+        <div className="card">
+          <Ring pct={pct} label={`${pct}%`} sub="vom Check-in ausgefüllt" />
+          <div className="btn-row" style={{marginTop:16}}>
+            <button className="btn primary" onClick={()=>go("quick")}>Schnellmodus</button>
+            <button className="btn" onClick={()=>go("full")}>Vollständig</button>
+          </div>
+          <div className="btn-row" style={{marginTop:10}}>
+            <button className="btn ghost" onClick={()=>setActiveDate(shiftDate(activeDate,-1))}>← Gestern</button>
+            <button className="btn ghost" onClick={()=>go("calendar")}>Kalender</button>
+          </div>
+          {!isToday &&
+            <button className="btn ghost" style={{marginTop:10}} onClick={()=>setActiveDate(todayKey())}>Zurück zu heute</button>}
+        </div>
+
+        {entry && (entry.mood_evening || entry.diary_text) ? (
+          <div className="card tight">
+            <div className="row" style={{marginBottom:8}}>
+              <span className="pill">Stimmung {entry.mood_evening ?? "–"}/10</span>
+              {entry.growth_happened===true && <span className="pill" style={{color:"var(--good)"}}>Gewachsen</span>}
+              {entry.social_fear_happened===true && <span className="pill">Mut-Situation</span>}
+            </div>
+            <div className="muted" style={{fontSize:14}}>{entry.diary_text || "Keine Notiz."}</div>
+          </div>
+        ) : (
+          <div className="card" style={{textAlign:"center"}}>
+            <div className="muted">Noch nichts eingetragen.</div>
+            <div className="faint" style={{fontSize:13,marginTop:4}}>Starte mit dem Schnellmodus – 1–3 Minuten.</div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ----------------------------- QUICK ----------------------------- */
+function Header({ title, onSave, activeDate }) {
+  return (
+    <div className="topbar">
+      <div>
+        <div className="eyebrow" style={{textTransform:"capitalize"}}>{fmtDate(activeDate)}</div>
+        <div className="date-big">{title}</div>
+      </div>
+      <button className="btn primary sm" onClick={onSave}>Fertig</button>
+    </div>
+  );
+}
+function QuickCheckin({ entry, set, activeDate, onSave }) {
+  const e = entry || createEmptyEntry(activeDate);
+  return (
+    <>
+      <Header title="Schnellmodus" onSave={onSave} activeDate={activeDate} />
+      <div className="wrap">
+        <Field label="Was habe ich heute gemacht?"><TA value={e.diary_text} onChange={set("diary_text")} placeholder="Kurze Tagesnotiz…" /></Field>
+        <Field label="Stimmung heute insgesamt"><Scale value={e.mood_evening} onChange={set("mood_evening")} /></Field>
+
+        <Field label="Bin ich heute besser geworden?"><YN value={e.growth_happened} onChange={set("growth_happened")} /></Field>
+        {e.growth_happened===true && <Field label="Wobei?"><Inp value={e.growth_text} onChange={set("growth_text")} placeholder="z. B. Disziplin, Kommunikation…" /></Field>}
+
+        <Field label="Etwas gelernt?"><YN value={e.learned_today} onChange={set("learned_today")} /></Field>
+        {e.learned_today===true && <Field label="Was?"><Inp value={e.learned_text} onChange={set("learned_text")} /></Field>}
+
+        <Field label="Gute Entscheidung heute?"><YN value={e.decision_good} onChange={set("decision_good")} /></Field>
+        {e.decision_good===true && <Field label="Welche?"><Inp value={e.decision_text} onChange={set("decision_text")} /></Field>}
+
+        <Field label="Soziale Mut-Situation?"><YN value={e.social_fear_happened} onChange={set("social_fear_happened")} /></Field>
+        {e.social_fear_happened===true && <>
+          <Field label="Angstlevel"><Scale value={e.social_fear_level} onChange={set("social_fear_level")} tone="bad" /></Field>
+          <Field label="Situation"><Inp value={e.social_fear_text} onChange={set("social_fear_text")} /></Field>
+        </>}
+
+        <Field label="Traum gehabt?"><YN value={e.dream_had} onChange={set("dream_had")} /></Field>
+        {e.dream_had===true && <Field label="Kurzbeschreibung"><TA value={e.dream_text} onChange={set("dream_text")} /></Field>}
+
+        <button className="btn primary" style={{marginTop:8}} onClick={onSave}>Speichern</button>
+        <div className="faint" style={{fontSize:12,textAlign:"center",marginTop:10}}>Eingaben werden automatisch gespeichert.</div>
+      </div>
+    </>
+  );
+}
+
+/* ----------------------------- FULL ----------------------------- */
+function FullCheckin({ entry, set, upsert, activeDate, onSave }) {
+  const e = entry || createEmptyEntry(activeDate);
+  const f = (k)=> e[k]!==null && e[k]!=="" && !(Array.isArray(e[k]) && e[k].length===0);
+  return (
+    <>
+      <Header title="Voller Check-in" onSave={onSave} activeDate={activeDate} />
+      <div className="wrap">
+
+        <Accordion title="Mini-Tagebuch" filled={f("diary_text")} defaultOpen>
+          <Field label="Was habe ich heute gemacht?"><TA value={e.diary_text} onChange={set("diary_text")} rows={3} /></Field>
+          <Field label="Was war heute besonders?"><TA value={e.diary_special} onChange={set("diary_special")} /></Field>
+          <Field label="Was hat mich beschäftigt?"><TA value={e.diary_busy} onChange={set("diary_busy")} /></Field>
+          <Field label="Freie Notizen"><TA value={e.diary_notes} onChange={set("diary_notes")} /></Field>
+        </Accordion>
+
+        <Accordion title="Stimmung & Energie" filled={f("mood_evening")}>
+          <Field label="Morgen"><Scale value={e.mood_morning} onChange={set("mood_morning")} /></Field>
+          <Field label="Mittag"><Scale value={e.mood_midday} onChange={set("mood_midday")} /></Field>
+          <Field label="Abend"><Scale value={e.mood_evening} onChange={set("mood_evening")} /></Field>
+          <Field label="Stimmung stark geschwankt?"><YN value={e.mood_shifted} onChange={set("mood_shifted")} /></Field>
+          {e.mood_shifted===true && <>
+            <Field label="In welchem Bereich?">
+              <Chips value={e.mood_shift_area?[e.mood_shift_area]:[]} onChange={(a)=>set("mood_shift_area")(a[a.length-1]||"")}
+                options={["Morgen","Mittag","Abend","Mehrere Bereiche"]} />
+            </Field>
+            <Field label="Vermutlicher Auslöser"><Inp value={e.mood_shift_reason} onChange={set("mood_shift_reason")} /></Field>
+          </>}
+          <div className="divider" />
+          <Field label="Energielevel"><Scale value={e.energy} onChange={set("energy")} /></Field>
+          <Field label="Stresslevel"><Scale value={e.stress} onChange={set("stress")} tone="bad" /></Field>
+          <Field label="Motivation"><Scale value={e.motivation} onChange={set("motivation")} /></Field>
+        </Accordion>
+
+        <Accordion title="Traumtagebuch" filled={f("dream_had")}>
+          <Field label="Geträumt?"><YN value={e.dream_had} onChange={set("dream_had")} /></Field>
+          {e.dream_had===true && <>
+            <Field label="Beschreibung"><TA value={e.dream_text} onChange={set("dream_text")} rows={3} /></Field>
+            <Field label="Emotion im Traum"><Inp value={e.dream_emotion} onChange={set("dream_emotion")} /></Field>
+            <Field label="Beteiligte Personen"><Inp value={e.dream_people} onChange={set("dream_people")} /></Field>
+            <Field label="Orte"><Inp value={e.dream_places} onChange={set("dream_places")} /></Field>
+            <Field label="Wiederkehrende Symbole/Motive"><Inp value={e.dream_symbols} onChange={set("dream_symbols")} /></Field>
+            <Field label="Intensität"><Scale value={e.dream_intensity} onChange={set("dream_intensity")} /></Field>
+            <Field label="Tendenz">
+              <Seg value={e.dream_valence} onChange={set("dream_valence")}
+                options={[{v:"positiv",label:"Positiv",tone:"yes"},{v:"gemischt",label:"Gemischt"},{v:"negativ",label:"Negativ",tone:"no"}]} />
+            </Field>
+          </>}
+        </Accordion>
+
+        <Accordion title="Wachstum – besser geworden" filled={f("growth_happened")}>
+          <Field label="Bin ich heute besser geworden?">
+            <Seg value={e.growth_happened} onChange={set("growth_happened")}
+              options={[{v:true,label:"Ja",tone:"yes"},{v:"unsicher",label:"Unsicher"},{v:false,label:"Nein",tone:"no"}]} />
+          </Field>
+          {(e.growth_happened===true || e.growth_happened==="unsicher") && <>
+            <Field label="Wo?"><Chips value={e.growth_categories} onChange={set("growth_categories")} options={GROWTH_CATS} /></Field>
+            <Field label="Was genau habe ich besser gemacht?"><TA value={e.growth_text} onChange={set("growth_text")} /></Field>
+            <Field label="Warum war das langfristig gut?"><TA value={e.growth_why} onChange={set("growth_why")} /></Field>
+            <Field label="Was möchte ich morgen fortsetzen?"><Inp value={e.growth_continue} onChange={set("growth_continue")} /></Field>
+          </>}
+        </Accordion>
+
+        <Accordion title="Lernen" filled={f("learned_today")}>
+          <Field label="Etwas gelernt?"><YN value={e.learned_today} onChange={set("learned_today")} /></Field>
+          {e.learned_today===true && <>
+            <Field label="Was?"><TA value={e.learned_text} onChange={set("learned_text")} /></Field>
+            <Field label="Kategorie"><Chips value={e.learned_category?[e.learned_category]:[]} onChange={(a)=>set("learned_category")(a[a.length-1]||"")} options={LEARN_CATS} /></Field>
+            <Field label="Erkenntnis, die ich behalten will"><TA value={e.learned_insight} onChange={set("learned_insight")} /></Field>
+            <Field label="Wichtigkeit"><Scale value={e.learned_importance} onChange={set("learned_importance")} /></Field>
+          </>}
+        </Accordion>
+
+        <Accordion title="Soziale Angst / Mut" filled={f("social_fear_happened")}>
+          <Field label="Soziale Situation mit Angst?"><YN value={e.social_fear_happened} onChange={set("social_fear_happened")} /></Field>
+          {e.social_fear_happened===true && <>
+            <Field label="Situation"><TA value={e.social_fear_text} onChange={set("social_fear_text")} /></Field>
+            <Field label="Angstlevel"><Scale value={e.social_fear_level} onChange={set("social_fear_level")} tone="bad" /></Field>
+            <Field label="Trotzdem gemacht?"><YNU value={e.social_fear_did} onChange={set("social_fear_did")} /></Field>
+            <Field label="Ergebnis"><Inp value={e.social_fear_result} onChange={set("social_fear_result")} /></Field>
+            <Field label="Angst im Nachhinein berechtigt?"><YNU value={e.social_fear_justified} onChange={set("social_fear_justified")} /></Field>
+            <Field label="Was habe ich gelernt?"><TA value={e.social_fear_learned} onChange={set("social_fear_learned")} /></Field>
+          </>}
+          <div className="divider" />
+          <Field label="Mit unbekannten Menschen geredet?"><YN value={e.talked_to_strangers} onChange={set("talked_to_strangers")} /></Field>
+          {e.talked_to_strangers===true && <Field label="Mit wie vielen?"><Inp type="number" value={e.stranger_count} onChange={set("stranger_count")} /></Field>}
+          {e.talked_to_strangers===false && <>
+            <Field label="Gab es eine realistische Möglichkeit?"><YN value={e.had_opportunity_to_talk} onChange={set("had_opportunity_to_talk")} /></Field>
+            {e.had_opportunity_to_talk===true && <Field label="Warum nicht gemacht?"><TA value={e.no_talk_reason} onChange={set("no_talk_reason")} /></Field>}
+          </>}
+          <Field label="Social-Challenge für morgen"><Inp value={e.social_challenge_tomorrow} onChange={set("social_challenge_tomorrow")} /></Field>
+        </Accordion>
+
+        <Accordion title="Entscheidungen" filled={f("decision_good")}>
+          <Field label="Gute Entscheidung getroffen?"><YN value={e.decision_good} onChange={set("decision_good")} /></Field>
+          {e.decision_good===true && <>
+            <Field label="Welche?"><TA value={e.decision_text} onChange={set("decision_text")} /></Field>
+            <Field label="Wie schwer?"><Scale value={e.decision_difficulty} onChange={set("decision_difficulty")} /></Field>
+            <Field label="Warum war sie gut?"><TA value={e.decision_why} onChange={set("decision_why")} /></Field>
+            <Field label="Eher…">
+              <Seg value={e.decision_horizon} onChange={set("decision_horizon")}
+                options={[{v:"kurzfristig",label:"Kurzfr. angenehm"},{v:"langfristig",label:"Langfr. sinnvoll",tone:"yes"}]} />
+            </Field>
+          </>}
+          <Field label="Schlechte Entscheidung? (optional)"><Inp value={e.decision_bad} onChange={set("decision_bad")} /></Field>
+          <Field label="Was lerne ich daraus?"><TA value={e.decision_learned} onChange={set("decision_learned")} /></Field>
+        </Accordion>
+
+        <Accordion title="Besondere Gefühle" filled={f("special_feeling_happened")}>
+          <Field label="Besonderes Gefühl heute?"><YN value={e.special_feeling_happened} onChange={set("special_feeling_happened")} /></Field>
+          {e.special_feeling_happened===true && <>
+            <Field label="Welches Gefühl?"><Inp value={e.special_feeling_text} onChange={set("special_feeling_text")} /></Field>
+            <Field label="Bei was oder wem?"><Inp value={e.special_feeling_person_or_trigger} onChange={set("special_feeling_person_or_trigger")} /></Field>
+            <Field label="Intensität"><Scale value={e.special_feeling_intensity} onChange={set("special_feeling_intensity")} /></Field>
+            <Field label="Tendenz">
+              <Seg value={e.special_feeling_valence} onChange={set("special_feeling_valence")}
+                options={[{v:"positiv",label:"Positiv",tone:"yes"},{v:"gemischt",label:"Gemischt"},{v:"negativ",label:"Negativ",tone:"no"}]} />
+            </Field>
+            <Field label="Was sagt das über Bedürfnisse / Werte / Ziele?"><TA value={e.special_feeling_meaning} onChange={set("special_feeling_meaning")} /></Field>
+          </>}
+        </Accordion>
+
+        <Accordion title="Körper & Gesundheit" filled={f("sleep_quality")}>
+          <Field label="Schlafdauer (Std.)"><Inp type="number" value={e.sleep_hours} onChange={set("sleep_hours")} placeholder="z. B. 7.5" /></Field>
+          <Field label="Schlafqualität"><Scale value={e.sleep_quality} onChange={set("sleep_quality")} /></Field>
+          <Field label="Sport gemacht?"><YN value={e.sport_done} onChange={set("sport_done")} /></Field>
+          {e.sport_done===true && <Field label="Was?"><Inp value={e.sport_text} onChange={set("sport_text")} /></Field>}
+          <Field label="Ernährung grob gut?"><Scale value={e.nutrition} onChange={set("nutrition")} /></Field>
+          <Field label="Schmerzen/Beschwerden?"><Inp value={e.pain} onChange={set("pain")} /></Field>
+          <Field label="Körperliche Energie"><Scale value={e.energy_body} onChange={set("energy_body")} /></Field>
+        </Accordion>
+
+        <Accordion title="Tagesabschluss" filled={f("gratitude")}>
+          <Field label="Wofür bin ich dankbar?"><TA value={e.gratitude} onChange={set("gratitude")} /></Field>
+          <Field label="Bester Moment?"><Inp value={e.best_moment} onChange={set("best_moment")} /></Field>
+          <Field label="Schwierigster Moment?"><Inp value={e.hardest_moment} onChange={set("hardest_moment")} /></Field>
+          <Field label="Was will ich morgen besser machen?"><TA value={e.tomorrow_focus} onChange={set("tomorrow_focus")} /></Field>
+          <Field label="Worauf bin ich stolz?"><Inp value={e.proud_of} onChange={set("proud_of")} /></Field>
+        </Accordion>
+
+        <button className="btn primary" style={{marginTop:10}} onClick={onSave}>Speichern & schließen</button>
+        <div className="faint" style={{fontSize:12,textAlign:"center",marginTop:10,marginBottom:20}}>Alle Eingaben werden automatisch gespeichert.</div>
+      </div>
+    </>
+  );
+}
+
+/* ----------------------------- CALENDAR ----------------------------- */
+function CalendarView({ entries, open, del }) {
+  const [q,setQ] = useState("");
+  const [confirm,setConfirm] = useState(null);
+  const days = useMemo(()=>{
+    let arr = Object.values(entries).sort((a,b)=> b.date.localeCompare(a.date));
+    if (q.trim()){
+      const s=q.toLowerCase();
+      arr = arr.filter(e => JSON.stringify(e).toLowerCase().includes(s));
+    }
+    return arr;
+  },[entries,q]);
+  return (
+    <>
+      <div className="topbar"><div><div className="eyebrow">Verlauf</div><div className="date-big">Kalender</div></div></div>
+      <div className="wrap">
+        <input className="inp" placeholder="In Einträgen suchen…" value={q} onChange={e=>setQ(e.target.value)} />
+        {days.length===0 && <div className="card" style={{textAlign:"center"}}><span className="muted">Keine Einträge gefunden.</span></div>}
+        {days.map(e=>(
+          <div key={e.date} className="list-day" onClick={()=>open(e.date)}>
+            <div className="row">
+              <strong style={{textTransform:"capitalize"}}>{fmtDate(e.date)}</strong>
+              <div style={{display:"flex",gap:6}}>
+                {e.mood_evening && <span className="pill">{e.mood_evening}/10</span>}
+                {e.growth_happened===true && <span className="pill" style={{color:"var(--good)"}}>↑</span>}
+                {e.social_fear_happened===true && <span className="pill">Mut</span>}
+              </div>
+            </div>
+            <div className="muted" style={{fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+              {e.diary_text || "—"}
+            </div>
+            <div style={{marginTop:4}}>
+              <button className="btn ghost sm" style={{color:"var(--bad)"}}
+                onClick={(ev)=>{ev.stopPropagation(); setConfirm(e.date);}}>Löschen</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {confirm &&
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:60,padding:24}}>
+          <div className="card" style={{maxWidth:320}}>
+            <strong>Tag wirklich löschen?</strong>
+            <div className="muted" style={{fontSize:13,margin:"6px 0 14px"}}>{fmtDate(confirm)} – das lässt sich nicht rückgängig machen.</div>
+            <div className="btn-row">
+              <button className="btn ghost" onClick={()=>setConfirm(null)}>Abbrechen</button>
+              <button className="btn" style={{background:"var(--bad)",borderColor:"var(--bad)",color:"#fff"}}
+                onClick={()=>{ del(confirm); setConfirm(null); }}>Löschen</button>
+            </div>
+          </div>
+        </div>}
+    </>
+  );
+}
+
+/* ----------------------------- STATS ----------------------------- */
+function avg(arr){ const v=arr.filter(x=>typeof x==="number"); return v.length?(v.reduce((a,b)=>a+b,0)/v.length):null; }
+function lastN(entries, n){
+  const cutoff = shiftDate(todayKey(), -(n-1));
+  return Object.values(entries).filter(e=>e.date>=cutoff).sort((a,b)=>a.date.localeCompare(b.date));
+}
+function StatsView({ entries }) {
+  const all = Object.values(entries);
+  const d7 = lastN(entries,7), d30 = lastN(entries,30);
+  const mood7 = avg(d7.map(e=>e.mood_evening));
+  const mood30 = avg(d30.map(e=>e.mood_evening));
+  const growthDays = all.filter(e=>e.growth_happened===true).length;
+  const fearSit = all.filter(e=>e.social_fear_happened===true).length;
+  const fearAvg = avg(all.map(e=>e.social_fear_level));
+  const strangers = all.reduce((a,e)=> a + (typeof e.stranger_count==="number"?e.stranger_count:0), 0);
+  const goodDecisions = all.filter(e=>e.decision_good===true).length;
+  const sleepAvg = avg(all.map(e=> typeof e.sleep_hours==="number"?e.sleep_hours: parseFloat(e.sleep_hours)||null));
+
+  const trend = d30.map(e=>({
+    d: e.date.slice(5),
+    Morgen: e.mood_morning, Mittag: e.mood_midday, Abend: e.mood_evening,
+  }));
+
+  const catCount = {};
+  all.forEach(e=> (e.growth_categories||[]).forEach(c=> catCount[c]=(catCount[c]||0)+1));
+  const topCats = Object.entries(catCount).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([name,n])=>({name,n}));
+
+  const learnCount = {};
+  all.forEach(e=> { if(e.learned_category) learnCount[e.learned_category]=(learnCount[e.learned_category]||0)+1; });
+  const topLearn = Object.entries(learnCount).sort((a,b)=>b[1]-a[1]).slice(0,5);
+
+  const feelCount = {};
+  all.forEach(e=> { if(e.special_feeling_text) feelCount[e.special_feeling_text]=(feelCount[e.special_feeling_text]||0)+1; });
+  const topFeel = Object.entries(feelCount).sort((a,b)=>b[1]-a[1]).slice(0,5);
+
+  const ax = { fontSize:11, fill:"var(--muted)" };
+
+  if (all.length===0) return (
+    <><div className="topbar"><div><div className="eyebrow">Analyse</div><div className="date-big">Statistik</div></div></div>
+    <div className="wrap"><div className="card" style={{textAlign:"center"}}><span className="muted">Noch keine Daten. Trag erst ein paar Tage ein.</span></div></div></>
+  );
+
+  return (
+    <>
+      <div className="topbar"><div><div className="eyebrow">Analyse · {all.length} Tage</div><div className="date-big">Statistik</div></div></div>
+      <div className="wrap">
+        <div className="stat-grid">
+          <div className="stat"><div className="n">{mood7?mood7.toFixed(1):"–"}</div><div className="l">Ø Stimmung 7 Tage</div></div>
+          <div className="stat"><div className="n">{mood30?mood30.toFixed(1):"–"}</div><div className="l">Ø Stimmung 30 Tage</div></div>
+          <div className="stat"><div className="n">{growthDays}</div><div className="l">Tage mit Wachstum</div></div>
+          <div className="stat"><div className="n">{fearSit}</div><div className="l">Mut-Situationen</div></div>
+          <div className="stat"><div className="n">{fearAvg?fearAvg.toFixed(1):"–"}</div><div className="l">Ø Angstlevel</div></div>
+          <div className="stat"><div className="n">{strangers}</div><div className="l">Gespräche m. Fremden</div></div>
+          <div className="stat"><div className="n">{goodDecisions}</div><div className="l">Gute Entscheidungen</div></div>
+          <div className="stat"><div className="n">{sleepAvg?sleepAvg.toFixed(1):"–"}</div><div className="l">Ø Schlaf (Std.)</div></div>
+        </div>
+
+        <div className="card">
+          <h3 style={{fontSize:14,marginBottom:10}}>Stimmungstrend (30 Tage)</h3>
+          <div style={{height:180}}>
+            <ResponsiveContainer>
+              <LineChart data={trend} margin={{top:4,right:4,left:-22,bottom:0}}>
+                <CartesianGrid stroke="var(--line)" vertical={false}/>
+                <XAxis dataKey="d" tick={ax} interval="preserveStartEnd"/>
+                <YAxis domain={[1,10]} tick={ax}/>
+                <Tooltip contentStyle={{background:"var(--card)",border:"1px solid var(--line)",borderRadius:10,fontSize:12}}/>
+                <Line type="monotone" dataKey="Morgen" stroke="#8b939d" dot={false} strokeWidth={1.5} connectNulls/>
+                <Line type="monotone" dataKey="Mittag" stroke="var(--accent)" dot={false} strokeWidth={1.5} connectNulls/>
+                <Line type="monotone" dataKey="Abend" stroke="var(--good)" dot={false} strokeWidth={2} connectNulls/>
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {topCats.length>0 && (
+          <div className="card">
+            <h3 style={{fontSize:14,marginBottom:10}}>Häufigste Wachstumsbereiche</h3>
+            <div style={{height: topCats.length*30+20}}>
+              <ResponsiveContainer>
+                <BarChart data={topCats} layout="vertical" margin={{top:0,right:10,left:0,bottom:0}}>
+                  <XAxis type="number" hide/>
+                  <YAxis type="category" dataKey="name" width={120} tick={ax}/>
+                  <Bar dataKey="n" fill="var(--accent)" radius={[0,5,5,0]}/>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {topLearn.length>0 &&
+          <div className="card tight">
+            <h3 style={{fontSize:14,marginBottom:8}}>Häufigste Lernkategorien</h3>
+            {topLearn.map(([k,n])=><div key={k} className="row" style={{padding:"4px 0"}}><span className="muted">{k}</span><span className="pill">{n}</span></div>)}
+          </div>}
+
+        {topFeel.length>0 &&
+          <div className="card tight">
+            <h3 style={{fontSize:14,marginBottom:8}}>Häufigste besondere Gefühle</h3>
+            {topFeel.map(([k,n])=><div key={k} className="row" style={{padding:"4px 0"}}><span className="muted">{k}</span><span className="pill">{n}</span></div>)}
+          </div>}
+      </div>
+    </>
+  );
+}
+
+/* ----------------------------- WORD ----------------------------- */
+function daysBetween(a,b){
+  const pa=a.split("-").map(Number), pb=b.split("-").map(Number);
+  return Math.round((Date.UTC(pb[0],pb[1]-1,pb[2]) - Date.UTC(pa[0],pa[1]-1,pa[2]))/86400000);
+}
+function dayIndexFor(dateKey, epoch){ return Math.max(0, daysBetween(epoch, dateKey)); }
+function wordForIndex(i){ return WORDS[i % WORDS.length]; }
+function WordView({ showToast }) {
+  const [stats,setStats] = useState({});
+  const [epoch,setEpoch] = useState(null);
+  const [mode,setMode] = useState("today"); // today | practice
+  const [practiceWord,setPracticeWord] = useState(null);
+  const [revealed,setRevealed] = useState(false);
+
+  useEffect(()=>{ storage.loadWordStats().then(setStats); },[]);
+  useEffect(()=>{ (async()=>{
+    let ep = await rawGet("dgl:wordepoch");
+    if(!ep){ ep = todayKey(); await rawSet("dgl:wordepoch", ep); } // 1. Nutzungstag = Wort 1
+    setEpoch(ep);
+  })(); },[]);
+  const saveStats = (s)=>{ setStats(s); storage.saveWordStats(s); };
+
+  const todayIdx = epoch ? dayIndexFor(todayKey(), epoch) : 0;
+  const wod = wordForIndex(todayIdx);
+  const seenWords = WORDS.slice(0, Math.min(todayIdx+1, WORDS.length)); // nur was schon dran war
+
+  const pickPractice = ()=>{
+    // Nur bereits gehabte Wörter; "nicht gewusst" kommen öfter -> gewichtet
+    const pool = [];
+    seenWords.forEach(w=>{
+      const miss = stats[w.w]?.miss || 0;
+      const weight = 1 + miss*2;
+      for(let i=0;i<weight;i++) pool.push(w);
+    });
+    setPracticeWord(pool[Math.floor(Math.random()*pool.length)]);
+    setRevealed(false);
+  };
+  const rate = (kind)=>{ // know | almost | miss
+    const cur = stats[practiceWord.w] || {know:0,almost:0,miss:0};
+    cur[kind] = (cur[kind]||0)+1;
+    saveStats({...stats,[practiceWord.w]:cur});
+    showToast(kind==="know"?"Gewusst":kind==="almost"?"Fast":"Kommt wieder");
+    pickPractice();
+  };
+
+  return (
+    <>
+      <div className="topbar"><div><div className="eyebrow">Wortschatz</div><div className="date-big">Wörter</div></div></div>
+      <div className="wrap">
+        <div className="seg" style={{marginBottom:12}}>
+          <button className={mode==="today"?"on":""} onClick={()=>setMode("today")}>Wort des Tages</button>
+          <button className={mode==="practice"?"on":""} onClick={()=>{setMode("practice"); if(!practiceWord) pickPractice();}}>Üben</button>
+        </div>
+
+        {mode==="today" && (
+          <div className="card">
+            <div className="row"><h2 style={{fontSize:24}}>{wod.w}</h2><span className="pill">Niveau {wod.lvl}</span></div>
+            <div style={{margin:"12px 0"}}>{wod.def}</div>
+            <div className="muted" style={{fontStyle:"italic"}}>„{wod.ex}“</div>
+            <div className="faint" style={{fontSize:13,marginTop:8}}>Synonyme: {wod.syn}</div>
+            <div className="btn-row" style={{marginTop:16}}>
+              <button className="btn primary" onClick={()=>{const c=stats[wod.w]||{know:0,almost:0,miss:0};c.know++;saveStats({...stats,[wod.w]:c});showToast("Verstanden");}}>Verstanden</button>
+              <button className="btn" onClick={()=>{const c=stats[wod.w]||{know:0,almost:0,miss:0};c.miss++;saveStats({...stats,[wod.w]:c});showToast("Kommt wieder");}}>Nochmal üben</button>
+            </div>
+          </div>
+        )}
+
+        {mode==="practice" && practiceWord && (
+          <div className="card">
+            <div className="eyebrow">Erkläre die Bedeutung · {seenWords.length} verfügbar</div>
+            <h2 style={{fontSize:26,margin:"8px 0 16px"}}>{practiceWord.w}</h2>
+            {!revealed
+              ? <button className="btn primary" onClick={()=>setRevealed(true)}>Definition zeigen</button>
+              : <>
+                  <div style={{marginBottom:6}}>{practiceWord.def}</div>
+                  <div className="muted" style={{fontStyle:"italic",marginBottom:14}}>„{practiceWord.ex}“</div>
+                  <div className="btn-row three">
+                    <button className="btn" style={{borderColor:"var(--good)"}} onClick={()=>rate("know")}>Gewusst</button>
+                    <button className="btn" onClick={()=>rate("almost")}>Fast</button>
+                    <button className="btn" style={{borderColor:"var(--bad)"}} onClick={()=>rate("miss")}>Nicht</button>
+                  </div>
+                </>}
+            <button className="btn ghost sm" style={{marginTop:14}} onClick={pickPractice}>Anderes Wort</button>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ----------------------------- EXPORT ----------------------------- */
+function download(filename, text, type){
+  const blob = new Blob([text], {type});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href=url; a.download=filename; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+function toCSV(entries){
+  const rows = Object.values(entries).sort((a,b)=>a.date.localeCompare(b.date));
+  if (!rows.length) return "";
+  const cols = Object.keys(rows[0]);
+  const esc = (v)=>{
+    if (Array.isArray(v)) v = v.join("|");
+    if (v===null||v===undefined) v="";
+    v = String(v).replace(/"/g,'""');
+    return /[",\n;]/.test(v) ? `"${v}"` : v;
+  };
+  return [cols.join(";"), ...rows.map(r=>cols.map(c=>esc(r[c])).join(";"))].join("\n");
+}
+function ExportView({ entries, showToast }) {
+  const [days,setDays] = useState(30);
+  const count = Object.keys(entries).length;
+  const subset = useMemo(()=>{
+    const cutoff = shiftDate(todayKey(), -(days-1));
+    return Object.values(entries).filter(e=>e.date>=cutoff).sort((a,b)=>a.date.localeCompare(b.date));
+  },[entries,days]);
+
+  const prompt = `Analysiere meine letzten ${subset.length} Tage aus meinem Daily Growth Log. `+
+    `Suche Muster in Stimmung, sozialen Ängsten, Wachstum, Entscheidungen, Lernen, Beziehungen und Energie. `+
+    `Gib mir konkrete, ehrliche und rationale Verbesserungsvorschläge. Erkenne wiederkehrende Trigger, `+
+    `positive Muster und blinde Flecke. Sei kritisch statt nur zustimmend.\n\nDaten (JSON):\n`+
+    JSON.stringify(subset, null, 2);
+
+  const copy = async (text)=>{
+    try { await navigator.clipboard.writeText(text); showToast("Kopiert"); }
+    catch { showToast("Kopieren nicht möglich"); }
+  };
+
+  return (
+    <>
+      <div className="topbar"><div><div className="eyebrow">Daten</div><div className="date-big">Export & Analyse</div></div></div>
+      <div className="wrap">
+        <div className="card">
+          <div className="label">Zeitraum</div>
+          <div className="seg">
+            {[7,30,90,9999].map(n=>(
+              <button key={n} className={days===n?"on":""} onClick={()=>setDays(n)}>{n===9999?"Alle":n}</button>
+            ))}
+          </div>
+          <div className="muted" style={{fontSize:13,marginTop:10}}>{subset.length} von {count} Tagen ausgewählt.</div>
+        </div>
+
+        <div className="card">
+          <h3 style={{fontSize:15,marginBottom:4}}>Für Claude / KI-Analyse</h3>
+          <div className="muted" style={{fontSize:13,marginBottom:12}}>Kopiert einen fertigen Analyse-Prompt inkl. deiner Daten. In Claude einfügen.</div>
+          <button className="btn primary" onClick={()=>copy(prompt)}>Analyse-Prompt kopieren</button>
+        </div>
+
+        <div className="card">
+          <h3 style={{fontSize:15,marginBottom:12}}>Rohdaten exportieren</h3>
+          <div className="btn-row">
+            <button className="btn" onClick={()=>download(`growth-log-${todayKey()}.json`, JSON.stringify(subset,null,2),"application/json")}>JSON</button>
+            <button className="btn" onClick={()=>download(`growth-log-${todayKey()}.csv`, toCSV(Object.fromEntries(subset.map(e=>[e.date,e]))),"text/csv")}>CSV</button>
+          </div>
+        </div>
+
+        <div className="warn">
+          Hinweis: Speichere sensible Daten nur, wenn du weißt, wo sie liegen. Im Prototyp liegen die Daten lokal im Artifact-Speicher dieses Geräts/Browsers – nicht öffentlich, aber auch nicht synchronisiert. Für die echte Version: Supabase mit Login.
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ----------------------------- PIN LOCK ----------------------------- */
+function PinLock({ mode, onDone }) {
+  const [input,setInput] = useState("");
+  const [stored,setStored] = useState(null);
+  const [err,setErr] = useState("");
+  useEffect(()=>{ storage.getPin().then(setStored); },[]);
+  const press = (d)=>{
+    const next = (input+d).slice(0,4);
+    setInput(next); setErr("");
+    if (next.length===4){
+      if (next===stored){ setTimeout(onDone,150); }
+      else { setErr("Falsche PIN"); setTimeout(()=>setInput(""),400); }
+    }
+  };
+  return (
+    <div className="center">
+      <div style={{textAlign:"center"}}>
+        <div className="eyebrow">Daily Growth Log</div>
+        <h2 style={{fontSize:20,marginTop:6}}>PIN eingeben</h2>
+      </div>
+      <div className="pin-dots">{[0,1,2,3].map(i=><span key={i} className={i<input.length?"f":""}/>)}</div>
+      {err && <div style={{color:"var(--bad)",fontSize:13}}>{err}</div>}
+      <div className="keypad">
+        {[1,2,3,4,5,6,7,8,9].map(n=><button key={n} onClick={()=>press(String(n))}>{n}</button>)}
+        <div></div>
+        <button onClick={()=>press("0")}>0</button>
+        <button onClick={()=>setInput(i=>i.slice(0,-1))} style={{fontSize:16}}>⌫</button>
+      </div>
+    </div>
+  );
+}
